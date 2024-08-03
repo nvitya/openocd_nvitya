@@ -1013,6 +1013,59 @@ static int aarch64_debug_entry(struct target *target)
 	return retval;
 }
 
+// source: https://sourceforge.net/p/openocd/mailman/message/36352958/
+int aarch64_disable_mmu(struct target *target)
+{
+	struct aarch64_common * aarch64 = target_to_aarch64(target);
+	struct armv8_common * armv8 = &aarch64->armv8_common;
+	int retval = ERROR_OK;
+	uint32_t instr = 0;
+
+	if (aarch64->system_control_reg_curr & 0x4U) {/*  data cache is active ? */
+		aarch64->system_control_reg_curr &= ~0x4U;
+	}
+	if ((aarch64->system_control_reg_curr & 0x1U)) {
+		aarch64->system_control_reg_curr &= ~0x1U;
+	}
+	LOG_DEBUG("System Control Register %lx\n", aarch64->system_control_reg_curr);
+
+	switch (armv8->arm.core_mode) {
+	case ARMV8_64_EL0T:
+	case ARMV8_64_EL1T:
+	case ARMV8_64_EL1H:
+		instr = ARMV8_MSR_GP(SYSTEM_SCTLR_EL1, 0);
+		break;
+	case ARMV8_64_EL2T:
+	case ARMV8_64_EL2H:
+		instr = ARMV8_MSR_GP(SYSTEM_SCTLR_EL2, 0);
+		break;
+	case ARMV8_64_EL3H:
+	case ARMV8_64_EL3T:
+		instr = ARMV8_MSR_GP(SYSTEM_SCTLR_EL3, 0);
+		break;
+
+	case ARM_MODE_SVC:
+	case ARM_MODE_ABT:
+	case ARM_MODE_FIQ:
+	case ARM_MODE_IRQ:
+		instr = ARMV4_5_MCR(15, 0, 0, 1, 0, 0);
+		break;
+
+	default:
+		LOG_DEBUG("unknown cpu state 0x%" PRIx32, armv8->arm.core_mode);
+		break;
+	}
+
+	retval = armv8->dpm.instr_write_data_r0(&armv8->dpm, instr, aarch64->system_control_reg_curr);
+	return retval;
+}
+
+COMMAND_HANDLER(aarch64_handle_disable_mmu_command)
+{
+	struct target *target = get_current_target(CMD_CTX);
+	return aarch64_disable_mmu(target);
+}
+
 static int aarch64_post_debug_entry(struct target *target)
 {
 	struct aarch64_common *aarch64 = target_to_aarch64(target);
@@ -1054,6 +1107,8 @@ static int aarch64_post_debug_entry(struct target *target)
 				armv8_mode_name(armv8->arm.core_mode), armv8->arm.core_mode);
 		return ERROR_FAIL;
 	}
+
+	retval = armv8->dpm.instr_write_data_r0(&armv8->dpm, instr,  aarch64->system_control_reg_curr);
 
 	if (target_mode != ARM_MODE_ANY)
 		armv8_dpm_modeswitch(&armv8->dpm, target_mode);
@@ -3179,6 +3234,13 @@ static const struct command_registration aarch64_exec_command_handlers[] = {
 		.help = "read coprocessor register",
 		.usage = "cpnum op1 CRn CRm op2",
 	},
+  {
+		.name = "disable_mmu",
+		.handler = aarch64_handle_disable_mmu_command,
+		.mode = COMMAND_EXEC,
+		.help = "disable mmu and dcache in System Control Register",
+		.usage = "",
+  },
 	{
 		.chain = smp_command_handlers,
 	},
